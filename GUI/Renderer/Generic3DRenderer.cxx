@@ -46,6 +46,8 @@
 #include "vtkTransformPolyDataFilter.h"
 #include "vtkTubeFilter.h"
 #include "vtkCellPicker.h"
+#include "vtkCellLocator.h"
+#include "vtkMapper.h"
 #include "vtkProp3D.h"
 #include "vtkCubeSource.h"
 #include "vtkCoordinate.h"
@@ -425,11 +427,28 @@ Generic3DRenderer::UpdateMeshAssembly()
   // stale entry would report the wrong label (and, for the island-delete tool,
   // would delete the wrong structure).
   m_CellPicker->InitializePickList();
+  m_CellPicker->RemoveAllLocators();
   m_ActorLabelMap.clear();
+  m_CellLocators.clear();
   for (auto it = actorMap->begin(); it != actorMap->end(); ++it)
   {
     m_CellPicker->AddPickList(it->second);
     m_ActorLabelMap[it->second] = it->first;
+
+    // vtkCellPicker matches a locator to an actor by dataset pointer, so the
+    // locator must be built on exactly the mapper's input. The octree itself is
+    // built lazily on the first pick and rebuilt automatically when the
+    // dataset's MTime advances (vtkCellLocator::BuildLocator), so an in-place
+    // mesh update cannot leave it stale.
+    vtkMapper *mapper = it->second->GetMapper();
+    vtkDataSet *ds = mapper ? mapper->GetInput() : nullptr;
+    if (ds && ds->GetNumberOfCells() > 0)
+    {
+      vtkSmartPointer<vtkCellLocator> locator = vtkSmartPointer<vtkCellLocator>::New();
+      locator->SetDataSet(ds);
+      m_CellLocators.push_back(locator);
+      m_CellPicker->AddLocator(locator);
+    }
   }
 
   ApplyDisplayMappingPolicyChange();
@@ -469,7 +488,9 @@ Generic3DRenderer::ResetMeshAssembly()
   // reuses these actors for other labels, so keeping them in the pick list or in
   // the label map would produce picks with the wrong label.
   m_CellPicker->InitializePickList();
+  m_CellPicker->RemoveAllLocators();
   m_ActorLabelMap.clear();
+  m_CellLocators.clear();
 
   m_ActorPool->RecycleAll();
 

@@ -17,6 +17,7 @@
 #include "QtWidgetActivator.h"
 #include "DisplayLayoutModel.h"
 #include <QtConcurrent/QtConcurrent>
+#include <QCoreApplication>
 #include "itkProcessObject.h"
 #include <QMenu>
 #include "QtWidgetCoupling.h"
@@ -39,6 +40,9 @@ ViewPanel3D::ViewPanel3D(QWidget *parent) :
   // Create a progress command
   m_RenderProgressCommand = CommandType::New();
   m_RenderProgressCommand->SetCallbackFunction(this, &ViewPanel3D::ProgressCallback);
+
+  m_EditingProgressCommand = CommandType::New();
+  m_EditingProgressCommand->SetCallbackFunction(this, &ViewPanel3D::EditingProgressCallback);
 
   // Connect the progress event
   ui->progressBar->setRange(0, 1000);
@@ -144,7 +148,7 @@ ViewPanel3D::onModelUpdate(const EventBucket &bucket)
     // just as importantly, undo and redo: those bump the image MTime but
     // otherwise leave the mesh untouched, which would show the user a surface
     // that no longer matches the segmentation.
-    on_btnUpdateMesh_clicked();
+    RefreshMeshForEditing();
   }
 
   if (bucket.HasEvent(ActiveLayerChangeEvent()) || bucket.HasEvent(LayerChangeEvent()) || bucket.HasEvent(MeshContentChangeEvent()))
@@ -217,6 +221,43 @@ void ViewPanel3D::on_btnUpdateMesh_clicked()
 
   // TODO: Delete this later - should be automatic!
   ui->view3d->repaint();
+}
+
+void ViewPanel3D::RefreshMeshForEditing()
+{
+  // A background (continuous-update) rebuild owns the mesh pipeline right now;
+  // it will pick up UIF_MESH_DIRTY on its own. And the rebuild below pumps
+  // events, so a queued SegmentationChangeEvent can land here re-entrantly.
+  if(m_RenderFuture.isRunning() || m_EditingMeshRefreshInProgress)
+    return;
+
+  m_EditingMeshRefreshInProgress = true;
+  ui->progressBar->setValue(0);
+  ui->progressBar->setVisible(true);
+
+  try
+    {
+    m_Model->UpdateSegmentationMesh(m_EditingProgressCommand);
+    }
+  catch(IRISException &IRISexc)
+    {
+    QMessageBox::warning(this, tr("Problem generating mesh"), IRISexc.what());
+    }
+
+  ui->progressBar->setVisible(false);
+  m_EditingMeshRefreshInProgress = false;
+
+  ui->view3d->repaint();
+}
+
+void ViewPanel3D::EditingProgressCallback(itk::Object *source, const itk::EventObject &)
+{
+  itk::ProcessObject *po = static_cast<itk::ProcessObject *>(source);
+  ui->progressBar->setValue((int)(1000 * po->GetProgress()));
+
+  // Repaint the bar. User input is excluded so that no mouse event can reach
+  // the editing tool while the surface it picks against is being rebuilt.
+  QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
 // For coupling mesh layer model with menu
@@ -412,6 +453,12 @@ void ViewPanel3D::on_btnExpand_clicked()
 
 void ViewPanel3D::onTimer()
 {
+  // The synchronous editing-tool rebuild pumps events, so this timer can fire
+  // in the middle of it; launching a second rebuild would contend for the mesh
+  // pipeline, and the else-branch below would hide its progress bar.
+  if(m_EditingMeshRefreshInProgress)
+    return;
+
   if(!m_RenderFuture.isRunning())
     {
     // Does work need to be done?
@@ -689,9 +736,9 @@ void ViewPanel3D::onBrush3DInvalidLabel()
   QMessageBox::information(
         this, tr("Select a drawing label"),
         tr("The active drawing label is \"Clear Label\".\n\n"
-           "The 3D brush, bridge and fill-hole tools add material using the "
-           "active label, so with \"Clear Label\" selected they would erase "
-           "instead of adding.\n\n"
+           "The 3D editing tools work with the active label: the brush paints "
+           "and erases it, and bridge and fill-hole add it. With \"Clear Label\" "
+           "selected there is nothing to paint, erase or add.\n\n"
            "Pick the label you are segmenting in the Segmentation Labels panel, "
            "then try again."));
 }

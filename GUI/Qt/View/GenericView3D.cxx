@@ -5,6 +5,7 @@
 #include "GlobalState.h"
 #include "vtkGenericRenderWindowInteractor.h"
 #include <QEvent>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <vtkInteractorStyle.h>
 #include <vtkInteractorStyleUser.h>
@@ -205,7 +206,7 @@ protected:
  *   middle drag               rotate camera
  *   shift/ctrl + left drag    pan / spin camera (VTK defaults)
  *   wheel                     dolly (VTK default)
- *   [ ]                       brush radius
+ *   [ ]                       brush size (diameter in voxels)
  *   , .                       depth
  *   Escape                    cancel a pending bridge endpoint
  *
@@ -223,10 +224,16 @@ public:
 
   virtual void OnLeftButtonDown() override
   {
-    // Ignore a second button pressed during a gesture. Letting it through would
-    // start a new stroke on top of the live one and orphan its undo deltas.
-    if(m_ActiveButton != 0)
+    if(!this->BeginPress(1))
       return;
+
+    // A camera gesture is in progress (e.g. middle-drag rotate); let the
+    // trackball handle the chord rather than starting a stroke mid-rotation
+    if(this->State != VTKIS_NONE)
+      {
+      vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
+      return;
+      }
 
     // A modifier always means "camera", so that muscle memory is preserved
     if(this->Interactor->GetShiftKey() || this->Interactor->GetControlKey())
@@ -257,12 +264,13 @@ public:
 
   virtual void OnRightButtonDown() override
   {
-    if(m_ActiveButton != 0)
+    if(!this->BeginPress(2))
       return;
 
     // Right-drag erases, mirroring the 2D paintbrush. It steals the trackball's
     // dolly, which the mouse wheel already provides.
-    if(this->Interactor->GetShiftKey() || this->Interactor->GetControlKey()
+    if(this->State != VTKIS_NONE
+       || this->Interactor->GetShiftKey() || this->Interactor->GetControlKey()
        || !this->IsBrushSubTool())
       {
       vtkInteractorStyleTrackballCamera::OnRightButtonDown();
@@ -295,6 +303,11 @@ public:
     // Rotating mid-stroke would leave the style in VTKIS_ROTATE for the rest of
     // the gesture, so ignore it entirely while painting.
     if(m_ActiveButton != 0)
+      return;
+
+    this->FindPokedRenderer(this->Interactor->GetEventPosition()[0],
+                            this->Interactor->GetEventPosition()[1]);
+    if(this->CurrentRenderer == nullptr)
       return;
 
     this->GrabFocus(this->EventCallbackCommand);
@@ -390,6 +403,28 @@ protected:
              ->GetBrush3DSettings().sub_tool == PAINT3D_BRUSH;
   }
 
+  /**
+   * Bookkeeping shared by the button-down handlers. Returns false if the press
+   * must be ignored: a DIFFERENT button pressed during a gesture (a chord,
+   * which would start a second stroke on top of the live one and orphan its
+   * undo deltas). If the SAME button is pressed again, its release was lost
+   * (focus stolen by a dialog, window switch mid-drag): finish the stale
+   * gesture first so that its staged deltas get their own undo point, then
+   * let the new press proceed.
+   */
+  bool BeginPress(int button)
+  {
+    if(m_ActiveButton == 0)
+      return true;
+
+    if(m_ActiveButton != button)
+      return false;
+
+    this->Release();
+    m_ActiveButton = 0;
+    return true;
+  }
+
   bool Push(bool erase)
   {
     Brush3DModel *bm = this->GetBrushModel();
@@ -451,6 +486,31 @@ GenericView3D::GenericView3D(QWidget *parent) :
 
   m_InteractionStyle[PAINT3D_MODE]
       = vtkSmartPointer<Brush3DInteractorStyle>::New();
+
+  // See eventFilter()
+  this->GetInternalWidget()->installEventFilter(this);
+}
+
+bool GenericView3D::eventFilter(QObject *obj, QEvent *ev)
+{
+  // The editing tool's keys ([ ] , . Esc) collide with window-level QAction
+  // shortcuts (e.g. next/previous layer on [ and ]). Qt offers the focused
+  // widget a ShortcutOverride first; accepting it makes the key arrive as an
+  // ordinary KeyPress, which the VTK widget forwards to the interactor style.
+  // QVTKOpenGLNativeWidget never accepts ShortcutOverride itself.
+  if(ev->type() == QEvent::ShortcutOverride && m_Model
+     && m_Model->GetParentUI()->GetGlobalState()->GetToolbarMode3D() == PAINT3D_MODE)
+    {
+    int k = static_cast<QKeyEvent *>(ev)->key();
+    if(k == Qt::Key_BracketLeft || k == Qt::Key_BracketRight
+       || k == Qt::Key_Comma || k == Qt::Key_Period || k == Qt::Key_Escape)
+      {
+      ev->accept();
+      return true;
+      }
+    }
+
+  return QtVTKRenderWindowBox::eventFilter(obj, ev);
 }
 
 GenericView3D::~GenericView3D()
@@ -494,6 +554,14 @@ void GenericView3D::onToolbarModeChange()
   assert(mode >= 0 && mode < TOOLBAR_MODE_3D_COUNT);
   this->GetRenderWindow()->GetInteractor()->SetInteractorStyle(m_InteractionStyle[mode]);
   setMouseTracking(mode == SCALPEL_MODE || mode == PAINT3D_MODE);
+
+  // The editing tool has keyboard bindings, so hovering into the view must be
+  // enough to make them work; requiring a click first would spin the camera
+  // or paint. Only this mode grabs focus, so text fields elsewhere are not
+  // disturbed by the pointer merely crossing the 3D view in other modes.
+  this->SetGrabFocusOnEntry(mode == PAINT3D_MODE);
+  if(mode == PAINT3D_MODE && this->underMouse())
+    this->GetInternalWidget()->setFocus();
 
   // Leaving the editing tool must take its preview actors and any half-finished
   // gesture with it

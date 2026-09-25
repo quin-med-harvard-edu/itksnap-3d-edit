@@ -170,14 +170,14 @@ font-size:11px;
             </size>
            </property>
            <property name="toolTip">
-            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Brush Size ([, ] keys)&lt;/span&gt;&lt;/p&gt;&lt;p&gt;Adjust the diameter of the 3D editing brush, in voxels.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Brush Size ([, ] keys)&lt;/span&gt;&lt;/p&gt;&lt;p&gt;Brush size (diameter in voxels) of the 3D editing brush. Size 1 paints a single voxel.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
            </property>
           </widget>
          </item>
          <item>
           <widget class="QSlider" name="inBrushSizeSlider">
            <property name="toolTip">
-            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Brush Size ([, ] keys)&lt;/span&gt;&lt;/p&gt;&lt;p&gt;Adjust the diameter of the 3D editing brush, in voxels.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Brush Size ([, ] keys)&lt;/span&gt;&lt;/p&gt;&lt;p&gt;Brush size (diameter in voxels) of the 3D editing brush. Size 1 paints a single voxel.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
            </property>
            <property name="orientation">
             <enum>Qt::Orientation::Horizontal</enum>
@@ -452,7 +452,7 @@ font-size:11px;
 Right-drag: erase
 Middle-drag: rotate camera
 Shift+Left-drag: pan
-[ / ]: brush radius
+[ / ]: brush size
 , / . : depth
 Esc: cancel bridge point</string>
      </property>

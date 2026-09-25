@@ -61,7 +61,7 @@ protected:
   virtual void resizeEvent(QResizeEvent *evt) override;
 
   // Whether this widget grabs keyboard focus when the mouse enters it
-  bool m_GrabFocusOnEntry;
+  bool m_GrabFocusOnEntry = false;
 
   void RendererCallback(vtkObject *src, unsigned long event, void *data);
 

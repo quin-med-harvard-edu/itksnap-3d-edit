@@ -30,7 +30,11 @@
 #include <itkImageRegion.h>
 #include <itkIndex.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <vector>
 
 /**
  * Helpers shared by the 3D brush stamp classes. Not part of the public API.
@@ -70,8 +74,10 @@ inline double
 ComputeEffectiveRadius(double radius)
 {
   // The 0.25 offset is the convention used by the 2D paintbrush
-  // (see PaintbrushModel::TestInside). It is what makes a radius-1 brush
-  // paint the 7-voxel cross rather than a single voxel or a 3x3x3 cube.
+  // (see PaintbrushModel::TestInside). With it, a brush of size 3 (radius
+  // 1.5) centred on a voxel paints the 7-voxel cross rather than a 3x3x3
+  // cube, and a brush of size 2 (radius 1) centred between four voxels
+  // paints a 2x2 block.
   double r_eff = radius - 0.25;
 
   // The 2D code does not clamp; without the clamp a radius below 0.25 would
@@ -222,9 +228,18 @@ protected:
  * \brief The volume swept by a BrushStamp3D moving along a straight segment.
  *
  * This is used by the 3D "bridge" sub-tool, which connects two picked points
- * with a solid tube of the current brush radius. Using a capsule rather than
- * a chain of individual stamps guarantees a gap-free bridge regardless of how
- * far apart the two endpoints are.
+ * with a solid tube of the current brush radius, and by the brush stroke,
+ * which sweeps it between consecutive mouse positions. Using a capsule rather
+ * than a chain of individual stamps guarantees a gap-free result regardless
+ * of how far apart the two endpoints are.
+ *
+ * The footprint always contains a 6-connected chain of voxels from one
+ * endpoint to the other (the voxels the segment passes through). Without it,
+ * small radii produce a string of diagonally-touching or isolated voxels:
+ * a voxel centre can be up to sqrt(3)/2 from the segment, which exceeds the
+ * effective radius at the two smallest brush sizes. A "bridge" that is not
+ * 6-connected is not a bridge as far as the island tool is concerned, and
+ * the smoothed isosurface does not render it either.
  */
 class BrushCapsule3D
 {
@@ -265,6 +280,8 @@ public:
     // to convert a radius expressed in scaled units back into voxels.
     for(unsigned int i = 0; i < 3; i++)
       m_HalfExtent[i] = radius / m_Scale[i];
+
+    this->ComputeVoxelPath();
   }
 
   /**
@@ -290,8 +307,14 @@ public:
   /** Test whether a voxel index falls inside the swept volume */
   bool TestInside(const IndexType &idx) const
   {
+    if(std::binary_search(m_Path.begin(), m_Path.end(), idx, IndexLess()))
+      return true;
+
     return this->TestInside(to_double(idx));
   }
+
+  /** The 6-connected voxel chain from A to B that is always part of the footprint */
+  const std::vector<IndexType> &GetVoxelPath() const { return m_Path; }
 
   /**
    * Test whether a continuous voxel-space position falls inside the swept
@@ -332,6 +355,17 @@ public:
 
 protected:
 
+  struct IndexLess
+  {
+    bool operator()(const IndexType &p, const IndexType &q) const
+    {
+      for(unsigned int i = 0; i < 3; i++)
+        if(p[i] != q[i])
+          return p[i] < q[i];
+      return false;
+    }
+  };
+
   Vector3d ApplyScale(const Vector3d &x) const
   {
     Vector3d y;
@@ -340,8 +374,90 @@ protected:
     return y;
   }
 
+  /**
+   * Walk the voxel grid from A to B crossing one voxel face at a time
+   * (Amanatides-Woo traversal). Voxel i spans [i-0.5, i+0.5) along each axis.
+   * The result is a 6-connected chain that starts at round(A) and ends at
+   * round(B); floating-point drift at the very end is absorbed by a final
+   * axis-by-axis walk, so the chain is complete regardless of rounding.
+   */
+  void ComputeVoxelPath()
+  {
+    IndexType cur, end;
+    for(unsigned int i = 0; i < 3; i++)
+      {
+      cur[i] = (long) std::floor(m_A[i] + 0.5);
+      end[i] = (long) std::floor(m_B[i] + 0.5);
+      }
+
+    const double inf = std::numeric_limits<double>::infinity();
+    Vector3d d = m_B - m_A;
+    long   step[3];
+    double t_max[3], t_delta[3];
+    for(unsigned int i = 0; i < 3; i++)
+      {
+      if(d[i] > 0.0)
+        {
+        step[i] = 1;
+        t_max[i] = ((cur[i] + 0.5) - m_A[i]) / d[i];
+        t_delta[i] = 1.0 / d[i];
+        }
+      else if(d[i] < 0.0)
+        {
+        step[i] = -1;
+        t_max[i] = ((cur[i] - 0.5) - m_A[i]) / d[i];
+        t_delta[i] = -1.0 / d[i];
+        }
+      else
+        {
+        step[i] = 0;
+        t_max[i] = inf;
+        t_delta[i] = inf;
+        }
+      }
+
+    m_Path.clear();
+    m_Path.push_back(cur);
+
+    // A monotone face-crossing walk needs exactly the Manhattan distance in
+    // steps; the guard only matters if rounding misbehaves.
+    long guard = 0;
+    for(unsigned int i = 0; i < 3; i++)
+      guard += std::labs(end[i] - cur[i]);
+    guard += 3;
+
+    while(cur != end && guard-- > 0)
+      {
+      unsigned int k = 0;
+      for(unsigned int i = 1; i < 3; i++)
+        if(t_max[i] < t_max[k])
+          k = i;
+
+      if(t_max[k] > 1.0 + 1e-9)
+        break;
+
+      cur[k] += step[k];
+      t_max[k] += t_delta[k];
+      m_Path.push_back(cur);
+      }
+
+    for(unsigned int i = 0; i < 3; i++)
+      {
+      while(cur[i] != end[i])
+        {
+        cur[i] += (end[i] > cur[i]) ? 1 : -1;
+        m_Path.push_back(cur);
+        }
+      }
+
+    std::sort(m_Path.begin(), m_Path.end(), IndexLess());
+  }
+
   // Endpoints in voxel space (used for the bounding box)
   Vector3d m_A, m_B;
+
+  // 6-connected voxel chain from A to B, sorted for binary search
+  std::vector<IndexType> m_Path;
 
   // Endpoint and axis in scaled coordinates (used for the inside test)
   Vector3d m_ScaledA, m_ScaledBA;

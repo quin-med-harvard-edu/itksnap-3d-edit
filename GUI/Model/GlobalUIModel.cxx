@@ -54,6 +54,7 @@
 #include <PaintbrushModel.h>
 #include <PaintbrushSettingsModel.h>
 #include <Brush3DSettingsModel.h>
+#include <Brush3DModel.h>
 #include "PolygonSettingsModel.h"
 #include <SynchronizationModel.h>
 #include <SnakeParameterModel.h>
@@ -185,6 +186,11 @@ GlobalUIModel::GlobalUIModel()
   // 3D model
   m_Model3D = Generic3DModel::New();
   m_Model3D->Initialize(this);
+
+  // UIF_UNDO_POSSIBLE / UIF_REDO_POSSIBLE depend on whether a 3D brush stroke
+  // is in progress, so the undo/redo actions must re-evaluate on stroke changes
+  Rebroadcast(m_Model3D->GetBrush3DModel(), Brush3DModel::Brush3DStateEvent(),
+              StateMachineChangeEvent());
 
   // Label editor model
   m_LabelEditorModel = LabelEditorModel::New();
@@ -392,10 +398,14 @@ bool GlobalUIModel::CheckState(UIState state)
       break;
     case UIF_LINKED_ZOOM:
       return m_SliceCoordinator->GetLinkedZoom();
+    // Undo and redo are locked out while a 3D brush stroke is in progress:
+    // the stroke's deltas are staged against the current image, and applying
+    // an older commit underneath them would corrupt both the stroke's undo
+    // point and the redo history.
     case UIF_UNDO_POSSIBLE:
-      return m_Driver->IsUndoPossible();
+      return m_Driver->IsUndoPossible() && !m_Model3D->GetBrush3DModel()->IsEngaged();
     case UIF_REDO_POSSIBLE:
-      return m_Driver->IsRedoPossible();
+      return m_Driver->IsRedoPossible() && !m_Model3D->GetBrush3DModel()->IsEngaged();
     case UIF_UNSAVED_CHANGES:
       break;
     case UIF_MESH_SAVEABLE:

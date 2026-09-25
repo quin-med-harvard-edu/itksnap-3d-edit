@@ -5,6 +5,7 @@
 #include <vtkSmartPointer.h>
 #include "ActorPool.h"
 #include <map>
+#include <vector>
 
 class Generic3DModel;
 class vtkGenericOpenGLRenderWindow;
@@ -24,6 +25,7 @@ class vtkCubeSource;
 class vtkSphereSource;
 class vtkTubeFilter;
 class vtkCellPicker;
+class vtkCellLocator;
 class vtkCoordinate;
 class vtkCamera;
 class vtkScalarBarActor;
@@ -251,6 +253,12 @@ protected:
   // map is rebuilt and cleared whenever the actors are recycled, because
   // ActorPool::RecycleAll() hands the same actors back out for different labels.
   std::map<vtkProp3D *, LabelType> m_ActorLabelMap;
+
+  // One cell locator per mesh actor in the pick list. Without locators
+  // vtkCellPicker tests every cell of every mesh on each pick, and the editing
+  // tool picks on every mouse move; on a large surface that is visibly laggy.
+  // Rebuilt alongside the pick list, cleared alongside it.
+  std::vector<vtkSmartPointer<vtkCellLocator>> m_CellLocators;
 
   // ---------------- 3D BRUSH / BRIDGE PREVIEW ----------------
 

@@ -101,7 +101,7 @@ SegmentationEdit3D::DeleteConnectedComponent(LabelImageWrapper *seg, const Index
   // The ROI doubles on each iteration and is always cropped to the image, so
   // this loop terminates after log2(max image dimension) passes; the counter is
   // just a belt-and-braces guard. 24 passes reaches a half-width of 2^27, well
-  // beyond any real image and still safely inside a 32-bit IndexValueType.
+  // beyond any real image dimension.
   for(int pass = 0; pass < 24; pass++)
     {
     // Build the candidate ROI and crop it to the image
@@ -235,7 +235,7 @@ SegmentationEdit3D::DeleteConnectedComponent(LabelImageWrapper *seg, const Index
 
 bool
 SegmentationEdit3D::CloseHole(LabelImageWrapper *seg, const IndexType &seed,
-                              LabelType active_label, DrawOverFilter draw_over,
+                              LabelType active_label,
                               double closing_radius, bool isotropic,
                               RegionType *dirty_out)
 {
@@ -315,16 +315,37 @@ SegmentationEdit3D::CloseHole(LabelImageWrapper *seg, const IndexType &seed,
 
   MaskImageType::Pointer closed = fltClosing->GetOutput();
 
+  // Only the hole the user pointed at should be filled. The closing operates
+  // on the whole ROI and would happily fill every gap of size <= 2r in it, so
+  // the write-back is limited to an ellipsoid of twice the structuring
+  // element radius (plus one voxel of slack) around the seed, which is as far
+  // as the voxels of a 2r-wide hole adjacent to the seed can reach.
+  double fill_extent[3];
+  for(unsigned int i = 0; i < 3; i++)
+    fill_extent[i] = 2.0 * se_radius[i] + 1.0;
+
   // Write the result back. Closing is extensive (output is a superset of the
-  // input), so voxels can only be added: PaintAsForeground() on the closed
-  // foreground is enough, and nothing is ever erased. Voxels that already
-  // carry the active label are no-ops inside the iterator.
-  SegmentationUpdateIterator it_update(seg, roi, active_label, draw_over);
+  // input), so voxels can only be added. Painting over the clear label only
+  // guarantees that neighboring structures with other labels are untouched:
+  // a hole is background by definition.
+  SegmentationUpdateIterator it_update(seg, roi, active_label,
+                                       DrawOverFilter(PAINT_OVER_ONE, 0));
   itk::ImageRegionConstIterator<MaskImageType> it_src(closed, closed->GetBufferedRegion());
 
   for(; !it_update.IsAtEnd(); ++it_update, ++it_src)
     {
-    if(it_src.Get())
+    if(!it_src.Get())
+      continue;
+
+    IndexType idx = it_update.GetIndex();
+    double q = 0.0;
+    for(unsigned int i = 0; i < 3; i++)
+      {
+      double u = (idx[i] - seed[i]) / fill_extent[i];
+      q += u * u;
+      }
+
+    if(q <= 1.0)
       it_update.PaintAsForeground();
     }
 

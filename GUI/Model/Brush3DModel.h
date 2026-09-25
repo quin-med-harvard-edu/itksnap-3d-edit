@@ -60,22 +60,21 @@ public:
   /** Fired when the hover position or brush geometry changes */
   itkEventMacro(Brush3DHoverEvent, IRISEvent)
 
-  /** Fired when the gesture state changes (bridge endpoint set/cleared, etc.) */
+  /**
+   * Fired when the gesture state changes: a stroke starts or ends, a bridge
+   * endpoint is set or cleared, an island deletion awaits confirmation.
+   */
   itkEventMacro(Brush3DStateEvent, IRISEvent)
 
-  /** Fired after an edit has been committed and the mesh should be refreshed */
-  itkEventMacro(Brush3DEditCommittedEvent, IRISEvent)
-
   /**
-   * Fired when an additive action was refused because the active drawing label
-   * is the clear label. Painting with label 0 erases, so for the additive
-   * tools it is never what the user meant.
+   * Fired when an action was refused because the active drawing label is the
+   * clear label. The brush paints and erases the active label and the bridge
+   * and fill-hole tools add it, so with label 0 there is nothing to do.
    */
   itkEventMacro(Brush3DInvalidLabelEvent, IRISEvent)
 
   FIRES(Brush3DHoverEvent)
   FIRES(Brush3DStateEvent)
-  FIRES(Brush3DEditCommittedEvent)
   FIRES(Brush3DInvalidLabelEvent)
 
   typedef SegmentationEdit3D::IndexType  IndexType;
@@ -227,14 +226,22 @@ protected:
   /** Paint a single stamp of the stroke */
   void ApplyStrokeStamp(const Vector3d &center);
 
+  /** Sweep the brush between two consecutive stroke positions */
+  void ApplyStrokeSweep(const Vector3d &from, const Vector3d &to);
+
   /** Finish a stroke: commit the undo point and fire the refresh event */
   void CommitStroke();
 
   /** Announce a committed edit (label use, SegmentationChangeEvent, refresh) */
   void NotifyEditCommitted();
 
-  /** One-shot sub-tool entry points */
-  ActionResult DoDeleteIsland(const Vector3d &center);
+  /**
+   * One-shot sub-tool entry points. `picked_label` is the label of the mesh
+   * actor under the cursor (0 when the point came from the ray march), so that
+   * island deletion targets the structure the user clicked on rather than
+   * whichever label happens to be nearest to the rounded pick point.
+   */
+  ActionResult DoDeleteIsland(const Vector3d &center, LabelType picked_label);
   ActionResult DoFillHole(const Vector3d &center);
   ActionResult DoBridge(const Vector3d &center);
 

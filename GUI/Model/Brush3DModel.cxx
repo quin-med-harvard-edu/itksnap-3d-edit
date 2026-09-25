@@ -42,8 +42,9 @@ namespace
 // anchor before we treat the intersection as degenerate
 const double kMaxPlaneDistance = 4096.0;
 
-// Upper bound on the number of interpolated stamps in a single mouse move
-const int kMaxInterpolationSteps = 256;
+// Longest distance, in voxels, between consecutive drag samples that is still
+// swept as a continuous stroke segment; anything longer is a jump
+const double kMaxStrokeSegmentLength = 128.0;
 
 // Voxel budget above which deleting a connected region asks for confirmation.
 // A stray fragment in an airway mask is a few hundred to a few thousand voxels;
@@ -370,10 +371,12 @@ void Brush3DModel::UpdatePreview()
   ren->SetBrushPreviewGeometry(m_HoverCenter, r_preview);
   ren->SetBrushPreviewVisible(true);
 
-  // Bridge preview: from the pending endpoint A to the current hover point
+  // Bridge preview: from the pending endpoint A to the current hover point,
+  // drawn at the same effective radius as the brush marker
   if(bs.sub_tool == PAINT3D_BRIDGE && m_BridgePointPending)
     {
-    ren->SetBridgePreviewGeometry(m_BridgeA, m_HoverCenter, bs.radius);
+    double r_tube = std::max(0.5, brush_stamp_3d_detail::ComputeEffectiveRadius(bs.radius));
+    ren->SetBridgePreviewGeometry(m_BridgeA, m_HoverCenter, r_tube);
     ren->SetBridgePreviewVisible(true);
     }
   else
@@ -398,6 +401,8 @@ void Brush3DModel::AbandonGesture()
   // A stroke that already wrote voxels must be committed: the image has been
   // modified, and leaving its deltas staged would attach them to whatever undo
   // point some unrelated later edit creates.
+  bool had_state = m_Engaged || m_BridgePointPending || m_IslandConfirmPending;
+
   if(m_Engaged)
     {
     m_Engaged = false;
@@ -405,8 +410,6 @@ void Brush3DModel::AbandonGesture()
     }
 
   m_StrokeChangedAnything = false;
-
-  bool had_state = m_BridgePointPending || m_IslandConfirmPending;
   m_BridgePointPending = false;
   m_IslandConfirmPending = false;
   m_PendingIslandVoxels = 0;
@@ -453,15 +456,22 @@ bool Brush3DModel::ProcessPushEvent(int px, int py, bool erase)
 
   Brush3DSettings bs = this->GetSettings();
 
-  // Every sub-tool except the eraser and delete-island ADDS material, and adds
-  // it with the active drawing label. If that label is the clear label, then
-  // "paint" writes zeros, i.e. it silently carves material away -- the exact
-  // opposite of what the tool is for. Refuse rather than destroy data.
-  bool is_additive = (bs.sub_tool == PAINT3D_BRIDGE)
-                  || (bs.sub_tool == PAINT3D_FILL_HOLE)
-                  || (bs.sub_tool == PAINT3D_BRUSH && !erase);
+  // A cold press must never use the drag-continuation plane: clicking on empty
+  // space has to fall through to the camera.
+  Vector3d c;
+  LabelType picked_label = 0;
+  if(!this->ComputeBrushCenter(px, py, false, true, c, &picked_label))
+    return false;
 
-  if(is_additive && this->GetDriver()->GetGlobalState()->GetDrawingColorLabel() == 0)
+  // Every sub-tool except delete-island works with the active drawing label:
+  // the brush paints and erases it, bridge and fill-hole add it. With the
+  // clear label there is nothing to erase, and "paint" would write zeros,
+  // i.e. silently carve material away. Refuse rather than destroy data. This
+  // check comes after the pick on purpose: a click on empty space must still
+  // reach the camera.
+  bool needs_label = (bs.sub_tool != PAINT3D_DELETE_ISLAND);
+
+  if(needs_label && this->GetDriver()->GetGlobalState()->GetDrawingColorLabel() == 0)
     {
     this->InvokeEvent(Brush3DInvalidLabelEvent());
 
@@ -469,12 +479,6 @@ bool Brush3DModel::ProcessPushEvent(int px, int py, bool erase)
     // as "the tool did something random" rather than "the tool refused".
     return true;
     }
-
-  // A cold press must never use the drag-continuation plane: clicking on empty
-  // space has to fall through to the camera.
-  Vector3d c;
-  if(!this->ComputeBrushCenter(px, py, false, true, c))
-    return false;
 
   m_HoverValid = true;
   m_HoverCenter = c;
@@ -484,8 +488,7 @@ bool Brush3DModel::ProcessPushEvent(int px, int py, bool erase)
     case PAINT3D_BRUSH:
       {
       Vector3d ray_origin, ray_dir;
-      if(!this->ComputeVoxelRay(px, py, ray_origin, ray_dir))
-        return false;
+      this->ComputeVoxelRay(px, py, ray_origin, ray_dir);
 
       m_Engaged = true;
       m_Erase = erase;
@@ -495,11 +498,14 @@ bool Brush3DModel::ProcessPushEvent(int px, int py, bool erase)
       m_LastCenter = c;
       this->ApplyStrokeStamp(c);
       this->UpdatePreview();
+
+      // Undo and redo are gated on the stroke (see GlobalUIModel::CheckState)
+      this->InvokeEvent(Brush3DStateEvent());
       return true;
       }
 
     case PAINT3D_DELETE_ISLAND:
-      return this->DoDeleteIsland(c) != ACTION_NONE;
+      return this->DoDeleteIsland(c, picked_label) != ACTION_NONE;
 
     case PAINT3D_BRIDGE:
       return this->DoBridge(c) != ACTION_NONE;
@@ -520,28 +526,19 @@ bool Brush3DModel::ProcessDragEvent(int px, int py)
   if(!this->ComputeBrushCenter(px, py, true, true, c))
     return true;   // still engaged; just nothing to paint at this pixel
 
-  Brush3DSettings bs = this->GetSettings();
-  double step = std::max(0.5, bs.radius);
-
-  // Interpolate along the path, otherwise a fast drag comes out dotted
-  Vector3d delta = c - m_LastCenter;
-  double dist = delta.magnitude();
-  if(dist > step)
-    {
-    // Clamp: a degenerate plane intersection can put c very far away, and on
-    // arm64 an out-of-range double->int conversion saturates to INT_MAX rather
-    // than wrapping, which would be a multi-billion-iteration freeze.
-    double steps = std::ceil(dist / step);
-    int n = (steps >= (double) kMaxInterpolationSteps)
-              ? kMaxInterpolationSteps
-              : (int) steps;
-    for(int i = 1; i <= n; i++)
-      this->ApplyStrokeStamp(m_LastCenter + delta * ((double) i / n));
-    }
-  else
-    {
+  // Sweep the brush from the previous position to this one. A capsule rather
+  // than a chain of stamps: it is a single region walk, and it carries the
+  // 6-connected voxel path that keeps a fast drag at size 1 or 2 from coming
+  // out as a string of disconnected dots.
+  //
+  // A degenerate plane intersection can put c very far from the previous
+  // point; the sweep's bounding box would then be enormous, so such a jump is
+  // treated as a fresh stamp rather than a stroke segment.
+  double dist = (c - m_LastCenter).magnitude();
+  if(dist > kMaxStrokeSegmentLength)
     this->ApplyStrokeStamp(c);
-    }
+  else if(dist > 1e-6)
+    this->ApplyStrokeSweep(m_LastCenter, c);
 
   m_LastCenter = c;
   m_HoverValid = true;
@@ -557,6 +554,7 @@ bool Brush3DModel::ProcessReleaseEvent(int, int)
 
   m_Engaged = false;
   this->CommitStroke();
+  this->InvokeEvent(Brush3DStateEvent());
   return true;
 }
 
@@ -606,6 +604,31 @@ void Brush3DModel::ApplyStrokeStamp(const Vector3d &center)
     m_StrokeChangedAnything = true;
 }
 
+void Brush3DModel::ApplyStrokeSweep(const Vector3d &from, const Vector3d &to)
+{
+  LabelImageWrapper *seg = this->GetSegmentation();
+  Vector3d spacing;
+  if(!seg || !this->GetSpacing(spacing))
+    return;
+
+  IRISApplication *driver = this->GetDriver();
+  Brush3DSettings bs = this->GetSettings();
+
+  BrushCapsule3D sweep(from, to, bs.radius, bs.shape, bs.isotropic, spacing);
+
+  RegionType dirty;
+  unsigned long n = SegmentationEdit3D::ApplyStamp(
+        seg, sweep,
+        driver->GetGlobalState()->GetDrawingColorLabel(),
+        driver->GetGlobalState()->GetDrawOverFilter(),
+        m_Erase,
+        NULL,      // mid-stroke: stage the delta, do not commit an undo point
+        &dirty);
+
+  if(n > 0)
+    m_StrokeChangedAnything = true;
+}
+
 void Brush3DModel::CommitStroke()
 {
   LabelImageWrapper *seg = this->GetSegmentation();
@@ -625,11 +648,10 @@ void Brush3DModel::NotifyEditCommitted()
     driver->RecordCurrentLabelUse();
     driver->InvokeEvent(SegmentationChangeEvent());
     }
-
-  this->InvokeEvent(Brush3DEditCommittedEvent());
 }
 
-Brush3DModel::ActionResult Brush3DModel::DoDeleteIsland(const Vector3d &center)
+Brush3DModel::ActionResult Brush3DModel::DoDeleteIsland(const Vector3d &center,
+                                                        LabelType picked_label)
 {
   LabelImageWrapper *seg = this->GetSegmentation();
   IndexType seed;
@@ -637,11 +659,19 @@ Brush3DModel::ActionResult Brush3DModel::DoDeleteIsland(const Vector3d &center)
     return ACTION_NONE;
 
   Brush3DSettings bs = this->GetSettings();
+  const LabelImageWrapper::ImageType *img = seg->GetImage();
 
   // The picked point sits ON the isosurface, so rounding it can land just
-  // outside the labeled voxel. Nudge toward the first labeled voxel in a small
-  // neighborhood before giving up.
-  if(seg->GetImage()->GetPixel(seed) == 0)
+  // outside the labeled voxel, or -- where two labels touch -- inside the
+  // neighbor's voxel. When the pick came from a mesh actor we know which
+  // label the user clicked on, so only accept that label; otherwise accept
+  // any labeled voxel.
+  auto matches = [&](const IndexType &idx) {
+    LabelType v = img->GetPixel(idx);
+    return picked_label != 0 ? (v == picked_label) : (v != 0);
+  };
+
+  if(!matches(seed))
     {
     bool fixed = false;
     for(int dz = -1; dz <= 1 && !fixed; dz++)
@@ -650,8 +680,7 @@ Brush3DModel::ActionResult Brush3DModel::DoDeleteIsland(const Vector3d &center)
           {
           IndexType probe = seed;
           probe[0] += dx; probe[1] += dy; probe[2] += dz;
-          if(seg->GetImage()->GetBufferedRegion().IsInside(probe)
-             && seg->GetImage()->GetPixel(probe) != 0)
+          if(img->GetBufferedRegion().IsInside(probe) && matches(probe))
             {
             seed = probe;
             fixed = true;
@@ -732,7 +761,6 @@ Brush3DModel::ActionResult Brush3DModel::DoFillHole(const Vector3d &center)
   bool changed = SegmentationEdit3D::CloseHole(
         seg, seed,
         driver->GetGlobalState()->GetDrawingColorLabel(),
-        driver->GetGlobalState()->GetDrawOverFilter(),
         bs.closing_radius, bs.isotropic, &dirty);
 
   if(!changed)

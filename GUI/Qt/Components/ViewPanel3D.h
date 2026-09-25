@@ -53,7 +53,7 @@ private slots:
   // Ask the user before deleting a large connected region in the 3D view
   void onConfirmIslandDelete();
 
-  // Explain why an additive 3D edit was refused with the clear label active
+  // Explain why a 3D edit was refused with the clear label active
   void onBrush3DInvalidLabel();
 
   void on_btnUpdateMesh_clicked();
@@ -119,6 +119,21 @@ private:
 
   typedef itk::MemberCommand<ViewPanel3D> CommandType;
   SmartPtr<CommandType> m_RenderProgressCommand;
+
+  // True while RefreshMeshForEditing() is rebuilding the mesh on the GUI
+  // thread; guards against re-entry from events pumped during the rebuild
+  bool m_EditingMeshRefreshInProgress = false;
+
+  // Progress command for the synchronous rebuild: drives the inline progress
+  // bar and pumps paint events, without the modal progress dialog
+  SmartPtr<CommandType> m_EditingProgressCommand;
+
+  // Rebuild the mesh after a segmentation change while the 3D editing tool is
+  // active. Synchronous, so the picking surface is current before the next
+  // mouse event; non-modal, so nothing pops up on every stroke.
+  void RefreshMeshForEditing();
+
+  void EditingProgressCallback(itk::Object *source, const itk::EventObject &event);
 
   void UpdateExpandViewButton();
 

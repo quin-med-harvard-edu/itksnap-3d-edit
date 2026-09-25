@@ -40,6 +40,10 @@ protected:
   virtual void leaveEvent(QEvent *ev) override;
   virtual void resizeEvent(QResizeEvent *evt) override;
 
+  // Installed on the internal VTK widget so that the 3D editing tool's keys
+  // are not consumed by window-level QAction shortcuts before reaching VTK
+  virtual bool eventFilter(QObject *obj, QEvent *ev) override;
+
   // The model in charge
   Generic3DModel *m_Model;
 

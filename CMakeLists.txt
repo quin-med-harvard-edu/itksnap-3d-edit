@@ -383,8 +383,8 @@ SET(LOGIC_HEADERS
   Logic/Common/SNAPAppearanceSettings.h
   Logic/Common/SNAPRegistryIO.h
   Logic/Common/SNAPSegmentationROISettings.h
-  Logic/Framework/DefaultBehaviorSettings.h
   Logic/Framework/BrushStamp3D.h
+  Logic/Framework/DefaultBehaviorSettings.h
   Logic/Framework/GenericImageData.h
   Logic/Framework/GlobalState.h
   Logic/Framework/ImageAnnotationData.h
@@ -394,8 +394,8 @@ SET(LOGIC_HEADERS
   Logic/Framework/LayerAssociation.h
   Logic/Framework/LayerAssociation.txx
   Logic/Framework/LayerIterator.h
-  Logic/Framework/SegmentationUpdateIterator.h
   Logic/Framework/SegmentationEdit3D.h
+  Logic/Framework/SegmentationUpdateIterator.h
   Logic/Framework/SNAPImageData.h
   Logic/Framework/TimePointProperties.h
   Logic/Framework/UndoDataManager.h
@@ -1434,6 +1434,16 @@ TARGET_INCLUDE_DIRECTORIES(logic_api_test PUBLIC ${SNAP_INCLUDE_DIRS})
 
 add_test(NAME IRISApplicationTest COMMAND logic_api_test)
 
+# Voxel-level operations of the 3D editing tool (brush stamp, sweep, island
+# deletion, hole filling, undo), exercised through the logic library only
+ADD_EXECUTABLE(SegmentationEdit3DTest
+    Testing/Logic/SegmentationEdit3DTest.cxx)
+TARGET_LINK_LIBRARIES(SegmentationEdit3DTest ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(SegmentationEdit3DTest PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME SegmentationEdit3DTest
+  COMMAND SegmentationEdit3DTest ${TESTDATA_DIR}/MRIcrop-orig.gipl.gz)
+
 ADD_EXECUTABLE(remote_image_load_test
     Testing/Logic/RemoteImageLoadTest.cxx)
 TARGET_LINK_LIBRARIES(remote_image_load_test ${SNAP_EXTERNAL_LIBS} itksnaplogic)
@@ -1625,17 +1635,17 @@ IF(APPLE)
   ENDIF()
 
 
+  # TODO: there has to be some way to determine all the executables that are included in
+  # the package but I spent an hour trying and I give up. So here it is, hard-coded.
+  SET(SNAP_MACOSX_CLI_EXES "c3d;c2d;c4d;c3d_affine_tool;greedy;greedy_template_average;itksnap-wt;itksnap;multi_chunk_greedy;greedy_propagation")
+  FOREACH(exe ${SNAP_MACOSX_CLI_EXES})
+    LIST(APPEND CPACK_BUNDLE_APPLE_CODESIGN_FILES "/Contents/bin/${exe}")
+  ENDFOREACH()
+
   IF(SNAP_MACOSX_CODESIGN_CERT)
     SET(CPACK_BUNDLE_APPLE_CERT_APP ${SNAP_MACOSX_CODESIGN_CERT})
     SET(CPACK_BUNDLE_APPLE_ENTITLEMENTS ${SNAP_SOURCE_DIR}/Utilities/MacOS/BundleResources/entitlements.plist)
     SET(CPACK_PRE_BUILD_SCRIPTS ${CMAKE_BINARY_DIR}/Utilities/MacOS/unlock_keychain.cmake)
-
-    # TODO: there has to be some way to determine all the executables that are included in
-    # the package but I spent an hour trying and I give up. So here it is, hard-coded.
-    SET(SNAP_MACOSX_CLI_EXES "c3d;c2d;c4d;c3d_affine_tool;greedy;greedy_template_average;itksnap-wt;itksnap;multi_chunk_greedy;greedy_propagation")
-    FOREACH(exe ${SNAP_MACOSX_CLI_EXES})
-      LIST(APPEND CPACK_BUNDLE_APPLE_CODESIGN_FILES "/Contents/bin/${exe}")
-    ENDFOREACH()
 
     # ADD COMMANDS FOR NOTARIZATION
     IF(SNAP_MACOS_NOTARYTOOL_PROFILE)
@@ -1643,9 +1653,19 @@ IF(APPLE)
       SET(CPACK_POST_BUILD_SCRIPTS ${CMAKE_BINARY_DIR}/Utilities/MacOS/notarize_and_staple.cmake)
     ENDIF()
 
-    SET(CPACK_APPLE_BUNDLE_ID "itk-snap")
     SET(CPACK_BUNDLE_APPLE_CODESIGN_PARAMETER "-vv --deep -f --options=runtime")
+  ELSE()
+    # No developer certificate: sign ad-hoc. CPack rewrites library paths with
+    # install_name_tool, which invalidates the build-time signature; without a
+    # fresh signature macOS refuses to launch the bundled app at all.
+    SET(CPACK_BUNDLE_APPLE_CERT_APP "-")
+    SET(CPACK_BUNDLE_APPLE_CODESIGN_PARAMETER "--deep -f")
+    SET(CPACK_PRE_BUILD_SCRIPTS ${SNAP_SOURCE_DIR}/Utilities/MacOS/strip_xattrs.cmake)
+    MESSAGE(STATUS "No SNAP_MACOSX_CODESIGN_CERT set; package will be ad-hoc signed")
   ENDIF()
+
+  # CPack passes this as `codesign -i`, so it must be set for both branches
+  SET(CPACK_APPLE_BUNDLE_ID "itk-snap")
 
   MESSAGE(STATUS "CPACK_BUNDLE_APPLE_CODESIGN_PARAMETER: ${CPACK_BUNDLE_APPLE_CODESIGN_PARAMETER}")
 

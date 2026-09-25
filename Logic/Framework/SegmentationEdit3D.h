@@ -67,8 +67,10 @@ public:
    * @param undo_string  When null, the delta is staged with
    *                     StoreIntermediateUndoDelta() so that it can be merged
    *                     into a single undo point at the end of a stroke. When
-   *                     non-null, a complete undo point is stored with this
-   *                     description.
+   *                     non-null and the stamp changed at least one voxel, an
+   *                     undo point with this description is stored (absorbing
+   *                     any staged deltas); when it changed nothing, no undo
+   *                     point is stored.
    * @param dirty_out    If non-null, receives the CROPPED region that was
    *                     visited (safe to hand to a mesh/render update)
    * @return Number of voxels whose label actually changed
@@ -114,18 +116,23 @@ public:
 
   /**
    * Perform a local morphological closing (dilate then erode) of the active
-   * label in a neighborhood of `seed`. This fills small holes and gaps
-   * without touching the rest of the segmentation.
+   * label around `seed`. This fills small holes and gaps without touching
+   * the rest of the segmentation.
    *
    * Only the active label participates in the closing. Using "any non-zero
    * voxel" as the foreground would silently merge the structure being
    * repaired with whatever neighboring structure happens to be within the
    * structuring element.
    *
+   * Only background (clear-label) voxels are ever written, since a hole is
+   * by definition unlabeled; voxels carrying another label are left alone.
+   * The write-back is further restricted to an ellipsoid of twice the
+   * structuring-element radius around `seed`, so that only the hole the
+   * user pointed at is filled and not every hole in the neighborhood.
+   *
    * @param seg            Segmentation layer being edited
    * @param seed           Center of the neighborhood
    * @param active_label   Label being closed (must be non-zero)
-   * @param draw_over      Draw-over filter limiting what may be overwritten
    * @param closing_radius Structuring element radius, in voxels
    * @param isotropic      When true, the structuring element is a ball in
    *                       physical space rather than in voxel space
@@ -133,7 +140,7 @@ public:
    * @return true if voxels were changed
    */
   static bool CloseHole(LabelImageWrapper *seg, const IndexType &seed,
-                        LabelType active_label, DrawOverFilter draw_over,
+                        LabelType active_label,
                         double closing_radius, bool isotropic,
                         RegionType *dirty_out);
 };
@@ -182,8 +189,11 @@ SegmentationEdit3D::ApplyStamp(LabelImageWrapper *seg, const TStamp &stamp,
 
   if(undo_string)
     {
-    // End of a stroke (or a one-shot operation): commit an undo point that
-    // also absorbs any deltas staged earlier in the stroke
+    // One-shot operation: store an undo point if anything changed. Note that
+    // Finalize() stores nothing when this stamp changed no voxels, so a
+    // caller that has staged deltas from earlier stamps must commit them
+    // itself (see Brush3DModel::CommitStroke); this path is meant for
+    // operations that consist of a single stamp.
     it_update.Finalize(undo_string);
     }
   else if(it_update.Finalize())
