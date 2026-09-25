@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-15, macos-15-intel]
+        os: [ubuntu-22.04, macos-15, macos-15-intel, windows-2022]
         itk_ver: ['v5.4.0']
         vtk_ver: ['9.5.2']
         qt_ver: ['6.8.1']
@@ -44,8 +44,18 @@ jobs:
             qt_host: mac
             qt_arch: clang_64
             ctest_cmd: ctest
+          # Best effort: produces the NSIS installer the way upstream CI does,
+          # but the fork's authors do not test on Windows
+          - os: windows-2022
+            qt_host: windows
+            qt_arch: win64_msvc2022_64
+            ctest_cmd: ctest
 
     steps:
+
+      - name: Select MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        if: ${{ runner.os == 'Windows' }}
 
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@master
@@ -55,6 +65,17 @@ jobs:
         with:
           brew: libssh
           apt: libcurl4-openssl-dev libssh-dev
+          choco: nsis
+
+      - name: Install libcurl and libssh on Windows
+        uses: johnwason/vcpkg-action@v6
+        id: vcpkg
+        if: ${{ runner.os == 'Windows' }}
+        with:
+          pkgs: curl libssh zlib
+          triplet: x64-windows-release
+          token: ${{ github.token }}
+          github-binarycache: false
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -102,6 +123,7 @@ jobs:
             VTK_MODULE_ENABLE_VTK_RenderingExternal:STRING=WANT
             CMAKE_BUILD_TYPE=Release
             CMAKE_INSTALL_PREFIX=${{ github.workspace }}/vtk/install
+            ${{ runner.os == 'Windows' && 'VTK_SMP_ENABLE_STDTHREAD=OFF' || '' }}
             ${{ runner.os == 'MacOS' && format('CMAKE_OSX_DEPLOYMENT_TARGET={0}', env.MACOS_DEPLOYMENT_TARGET) || '' }}
 
       - name: Cache VTK
@@ -146,6 +168,8 @@ jobs:
             Module_MorphologicalContourInterpolation:BOOL=TRUE
             CMAKE_BUILD_TYPE=Release
             CMAKE_INSTALL_PREFIX=${{ github.workspace }}/itk/install
+            ${{ runner.os == 'Windows' && 'CMAKE_EXE_LINKER_FLAGS=/FORCE:MULTIPLE' || '' }}
+            ${{ runner.os == 'Windows' && 'CMAKE_EXE_SHARED_FLAGS=/FORCE:MULTIPLE' || '' }}
             ${{ runner.os == 'MacOS' && format('CMAKE_OSX_DEPLOYMENT_TARGET={0}', env.MACOS_DEPLOYMENT_TARGET) || '' }}
 
       - name: Cache ITK
@@ -170,18 +194,38 @@ jobs:
         continue-on-error: true
         run: git fetch
 
+      # Windows: vcpkg's toolchain plus explicit curl paths and the same
+      # /FORCE:MULTIPLE workaround for ITK 5.4.0 that upstream CI applies
       - name: Configure ITK-SNAP
         shell: bash
         run: |
+          # Paths are quoted: on Windows GITHUB_WORKSPACE contains backslashes
+          extra=()
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            extra+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOS_DEPLOYMENT_TARGET")
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            vcpkg="$GITHUB_WORKSPACE/vcpkg"
+            extra+=("-DCMAKE_TOOLCHAIN_FILE=$vcpkg/scripts/buildsystems/vcpkg.cmake"
+                    "-DVCPKG_TARGET_TRIPLET=x64-windows-release"
+                    "-DCURL_LIBRARY=$vcpkg/installed/x64-windows-release/lib/libcurl.lib"
+                    "-DCURL_INCLUDE_DIR=$vcpkg/installed/x64-windows-release/include"
+                    "-DCMAKE_EXE_LINKER_FLAGS=/FORCE:MULTIPLE"
+                    "-DCMAKE_EXE_SHARED_FLAGS=/FORCE:MULTIPLE")
+          fi
           cmake -S itksnap -B itksnap/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DITK_DIR=${{ github.workspace }}/itk/build \
-            -DVTK_DIR=${{ github.workspace }}/vtk/install/lib/cmake/vtk-9.5 \
-            ${{ runner.os == 'MacOS' && format('-DCMAKE_OSX_DEPLOYMENT_TARGET={0}', env.MACOS_DEPLOYMENT_TARGET) || '' }}
+            "-DITK_DIR=$GITHUB_WORKSPACE/itk/build" \
+            "-DVTK_DIR=$GITHUB_WORKSPACE/vtk/install/lib/cmake/vtk-9.5" \
+            "${extra[@]}"
 
       - name: Build ITK-SNAP
         shell: bash
         run: cmake --build itksnap/build --parallel
+
+      - name: Add libcurl.dll to PATH
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        run: echo "${{ github.workspace }}/vcpkg/installed/x64-windows-release/bin" >> $GITHUB_PATH
 
       - name: Test
         id: test

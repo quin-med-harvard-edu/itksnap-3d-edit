@@ -106,11 +106,13 @@ Prebuilt packages are on the
 | macOS, Apple Silicon | `itksnap-*-Darwin-arm64.dmg` |
 | macOS, Intel | `itksnap-*-Darwin-x86_64.dmg` |
 | Ubuntu / Linux, x86_64 | `itksnap-*-Linux-x86_64.tar.gz` |
+| Windows, x64 (best effort) | `itksnap-*-win64-AMD64.exe` installer |
 
 Every CI run on the [Actions tab](https://github.com/HUmutI/itksnap-3d-edit/actions) also uploads
-the same three packages as build artifacts, so the latest commit is always downloadable.
+the same packages as build artifacts, so the latest commit is always downloadable.
 
-Windows is untested and unsupported.
+The Windows installer is produced by CI the same way upstream ITK-SNAP builds it, but the fork's
+authors do not use or test Windows; macOS and Ubuntu are the supported platforms.
 
 ### macOS
 
