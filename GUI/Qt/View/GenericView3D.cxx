@@ -243,7 +243,7 @@ public:
       }
 
     if(this->Push(false))
-      m_ActiveButton = 1;
+      this->HoldIfStroke(1);
     else
       // Clicking empty space still rotates, exactly like the spray tool
       vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
@@ -278,7 +278,7 @@ public:
       }
 
     if(this->Push(true))
-      m_ActiveButton = 2;
+      this->HoldIfStroke(2);
     else
       vtkInteractorStyleTrackballCamera::OnRightButtonDown();
   }
@@ -437,6 +437,26 @@ protected:
     if(consumed)
       this->Interactor->Render();
     return consumed;
+  }
+
+  /**
+   * Only a brush stroke continues past the press. Delete island, bridge and
+   * fill hole finish on the press, and so does the invalid-label refusal. Some
+   * of them open a modal dialog, which swallows the button release; holding
+   * the button for them would leave it held, and hover, erase and rotate would
+   * then be ignored until the next left click.
+   *
+   * Applied on Windows only, the one platform this fix has been tested on.
+   * Elsewhere the button is held for every consumed press, as before.
+   */
+  void HoldIfStroke(int button)
+  {
+#ifdef _WIN32
+    Brush3DModel *bm = this->GetBrushModel();
+    if(!bm || !bm->IsEngaged())
+      return;
+#endif
+    m_ActiveButton = button;
   }
 
   void Release()
